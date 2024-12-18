@@ -38,8 +38,8 @@ class Critic(nn.Module):
         x = F.relu(self.Linear3(x))
         return x
     
-    def sample_action(self, obs, h, c, epsilon):
-        output = self.forward(obs, h, c)
+    def sample_action(self, obs, epsilon):
+        output = self.forward(obs)
 
         if random.random() < epsilon:
             return random.randint(0, 1)
