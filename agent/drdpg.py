@@ -12,58 +12,60 @@ device = torch.device("cpu")
 
 class DDPGagent:
     def __init__(self, state_dim, action_dim, max_action, buffer_len, lookup_step,actor_learning_rate, critic_learning_rate): 
-        
+    
         self.actor = Actor(state_dim, action_dim, max_action).to(device)
         self.actor_target = copy.deepcopy(self.actor)
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(),lr = actor_learning_rate)
 
-        
+    
         self.critic = Critic(state_dim, action_dim).to(device)
         self.critic_target = copy.deepcopy(self.critic)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(),lr = critic_learning_rate)
-        
+    
         # Replay Memory
         self.memory = EpisodeBuffer()
         self.max_action  = max_action
         self.lookup_step = lookup_step
         self.noise_cnt = 0
-        self.noise_cnt_min = 24*7*50
-        
+        self.policy_update_cnt = 0
+        self.noise_cnt_min = 24*7*10
+    
     def get_action(self, state, h, c, noise):
         action, new_h, new_c = self.actor(state, h, c)      
         action = action.cpu().data.numpy().flatten()
-        self.policy_update_cnt += 1
-        if self.policy_update_cnt < self.policy_update_cnt_min:
-           action = self.max_action * (np.random.rand(self.actor.action_dim))
+        self.noise_cnt += 1
+        if self.noise_cnt < self.noise_cnt_min:
+            action = self.max_action * (np.random.rand(self.actor.action_dim))
         else:
             noise_value = np.random.normal(0, noise, size=action.shape)
             action = (action + noise_value).clip(-self.max_action, self.max_action)
         return action, new_h, new_c
-        
+    
     def get_value(self, state, h, c):
         state  = torch.FloatTensor(state.reshape(1, -1)).to(device)
         action, h, c = self.actor(state, h, c)
         return self.critic(state, action).cpu().data.numpy().flatten(), h, c
-    
+
 
 # DDPG Agent class
 class Actor(nn.Module):
     def __init__(self, state_dim, action_dim, max_action):
         super(Actor, self).__init__()
-        self.hidden_space = 64
+        self.hidden_space = 32
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.max_action = max_action
-        
+    
         self.Linear1 = nn.Linear(self.state_dim, self.hidden_space)
         self.lstm = nn.LSTM(self.hidden_space, self.hidden_space, batch_first = True)
-        self.Linear2 = nn.Linear(self.hidden_space, self.action_dim)
-        
+        self.Linear2 = nn.Linear(self.hidden_space, self.hidden_space)
+        self.Linear3 = nn.Linear(self.hidden_space, self.action_dim)
+    
     def forward(self, state, h, c):
         x = F.relu(self.Linear1(state))
         x, (new_h, new_c) = self.lstm(x, (h, c)) 
-        x =self.Linear2(x)
-        action = self.max_action * torch.tanh(x)
+        x = self.Linear2(x)
+        action = self.max_action * torch.tanh(self.Linear3(x))
         return action, new_h, new_c
    
     def init_hidden_state(self, batch_size, training=None):
@@ -75,22 +77,24 @@ class Actor(nn.Module):
 class Critic(nn.Module):
     def __init__(self, state_dim = None, action_dim = None):
         super(Critic, self).__init__()
-        self.hidden_space = 64
+        self.hidden_space = 32
         self.state_dim = state_dim
         self.action_dim = action_dim
-        
+    
         self.Linear1 = nn.Linear(self.state_dim + self.action_dim, self.hidden_space)
         self.lstm = nn.LSTM(self.hidden_space, self.hidden_space, batch_first = True)
-        self.Linear2 = nn.Linear(self.hidden_space, 1)
-        
+        self.Linear2 = nn.Linear(self.hidden_space, self.hidden_space)
+        self.Linear3 = nn.Linear(self.hidden_space, 1)
+    
     def forward(self, state, action, h, c):
         x = torch.cat([state, action],dim=2)
         x = F.relu(self.Linear1(x))
         # LSTM
         x, (new_h, new_c) = self.lstm(x, (h, c))
-        q_value = self.Linear2(x)
+        x = self.Linear2(x)
+        q_value = self.Linear3(x)
         return q_value, new_h, new_c
-    
+
     def init_hidden_state(self, batch_size, training=None):
         if training is True:
             return torch.zeros([1, batch_size, self.hidden_space]), torch.zeros([1, batch_size, self.hidden_space])
@@ -145,9 +149,9 @@ class EpisodeMemory():
     """Episode memory for recurrent agent"""
 
     def __init__(self, random_update=False,
-                 max_epi_num=100, max_epi_len=700,
-                 batch_size=1,
-                 lookup_step=None):
+                  max_epi_num=100, max_epi_len=700,
+                  batch_size=1,
+                  lookup_step=None):
         
         self.random_update = random_update
         self.max_epi_num = max_epi_num
@@ -209,7 +213,8 @@ def train(actor=None, actor_target=None, critic=None, critic_target = None, epis
           actor_optimizer=None,
           critic_optimizer = None,
           batch_size=1,
-          gamma=0.99):
+          gamma=0.99,
+          noise= 0.2):
     
     assert device is not None, "None Device input: device should be selected."
 
@@ -246,24 +251,30 @@ def train(actor=None, actor_target=None, critic=None, critic_target = None, epis
     dones = torch.FloatTensor(dones.reshape(
         batch_size, seq_len, -1)).to(device)
     
+    #######################################################################
+    # ターゲットの計算
+    ######################################
     # アクターのLSTMの初期状態を取得
-    h_actor, c_actor = actor.init_hidden_state(batch_size=batch_size, training=True)
     h_actor_target, c_actor_target = actor_target.init_hidden_state(batch_size=batch_size, training=True)
 
     # クリティックのLSTMの初期状態を取得
-    h_critic, c_critic = critic.init_hidden_state(batch_size=batch_size, training=True)
     h_critic_target, c_critic_target = critic_target.init_hidden_state(batch_size=batch_size, training=True)
 
-    next_actions, h_critic_next, c_critic_next = actor(next_observations, h_critic, c_critic)
+    next_actions, _, _ = actor_target(next_observations, h_actor_target, c_actor_target)
     
     # ターゲットクリティックネットワークでQ値を計算
     target_q_values, _, _ = critic_target(next_observations, next_actions, h_critic_target, c_critic_target)
 
     # ターゲット値を計算
-    target_q_values = rewards + gamma * target_q_values
-
+    target_q_values = rewards + gamma * target_q_values * dones
+    
+    #######################################################################
+    # アクターとクリティックの更新
+    ######################################
     # クリティックネットワークの計算
-    current_q_values, _, _ = critic(observations, actions, h_critic_next, c_critic_next)
+    h_critic, c_critic = critic.init_hidden_state(batch_size=batch_size, training=True)
+    
+    current_q_values, _, _ = critic(observations, actions, h_critic, c_critic)
     
     # クリティックの損失
     critic_loss = F.mse_loss(current_q_values, target_q_values)
@@ -272,8 +283,9 @@ def train(actor=None, actor_target=None, critic=None, critic_target = None, epis
     critic_optimizer.zero_grad()
     critic_loss.backward()
     critic_optimizer.step()
-
+    
     # アクターの損失計算
+    h_actor, c_actor = actor.init_hidden_state(batch_size=batch_size, training=True)
     predicted_actions, h_actor_next, c_actor_next = actor(observations, h_actor, c_actor)
     actor_loss = -critic(observations, predicted_actions, h_critic, c_critic)[0].mean()
 
