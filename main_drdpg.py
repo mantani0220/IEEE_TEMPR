@@ -1,8 +1,8 @@
+
 import numpy as np
 import random
 import copy
 import torch
-import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 import pandas as pd
 from datetime import datetime
@@ -11,12 +11,12 @@ from rl_env.energy_continue import ContinueEnergyEnv
 
 ###############################################################################
 # Main func with pytorch
-from agent.ddpg import Actor, Critic, EpisodeMemory, EpisodeBuffer, DDPGagent,train
+from agent.drdpg import Actor, Critic, EpisodeMemory, EpisodeBuffer, DDPGagent,train
 
 if __name__ == "__main__":
     random.seed(1)
     np.random.seed(1)
-    log_dir = 'logs/logs'+datetime.now().strftime('%m%d%H%M')
+    log_dir = 'drdpg_logs/logs'+datetime.now().strftime('%m%d%H%M')
     writer  = SummaryWriter(log_dir=log_dir)
     
     ###########################################    
@@ -32,28 +32,22 @@ if __name__ == "__main__":
     # DDPG setting parameters
     ############################################
     batch_size              = 8
-    actor_learning_rate     = 5e-4
-    critic_learning_rate    = 5e-4
+    actor_learning_rate     = 1e-8
+    critic_learning_rate    = 1e-4
     buffer_len              = int(100000)
     max_epi_num             = 100
-    min_epi_num             = 30
+    min_epi_num             = 20
     
-    episodes                = 5000
-    tau                     = 1e-2
+    episodes                = 500
+    tau                     = 5e-2
     gamma                   = 0.9
     max_step                = 1000
     
-    policy_update_cnt       = 0
-    target_update_period    = 4
-    policy_noise            = 0.2
-    noise_clip              = 0.5
-    policy_freq             = 2
-    policy_update_cnt       = 0
-    
+    target_update_period    = 4   
     # noise parameter
     initial_noise           = 0.2
     noise_decay             = 1
-    noise_min               = 0.001
+    noise_min               = 0.1
     
     # DRDPG param
     random_update = True # If you want to do random update instead of sequential update
@@ -94,7 +88,6 @@ if __name__ == "__main__":
     penalty_history = []
     battery_penalty_history = []
     xD_t_history = []
-    
     current_datetime = datetime.now().strftime('%Y%m%d_%H%M')
     
     # Train
@@ -166,7 +159,8 @@ if __name__ == "__main__":
                           actor_optimizer,
                           critic_optimizer,
                           batch_size,
-                          gamma)
+                          gamma,
+                          noise)
 
                 if (t+1) % target_update_period == 0:
                     for param, target_param in zip(critic.parameters(), critic_target.parameters()):
@@ -177,11 +171,12 @@ if __name__ == "__main__":
                 
             if done:
                 break
-        
+ 
+
         episode_memory.put(episode_record)
+        noise *= noise_decay 
+        noise = max(noise, noise_min)  # ノイズ下限値を設定
         
-        # noise = max(noise, noise_min)  # ノイズ下限値を設定
-    
         bidding_history.append(episode_bidding)  # Save episode bidding data
         scaling_history.append(episode_scaling)  # Save episode scaling data
         step_rewards_list.append(episode_step_rewards)
