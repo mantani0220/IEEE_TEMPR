@@ -287,7 +287,7 @@ class DRDPGagent:
                 # episode_xD_t_history.append(env.xD_t)
                 
                 with torch.no_grad():
-                    q_values, _, _ = self.critic.forward(torch.from_numpy(obs).float().to(device).unsqueeze(0).unsqueeze(0), torch.from_numpy(a).float().to(device).unsqueeze(0).unsqueeze(0), h, c)
+                    q_values, _, _ = self.critic(torch.from_numpy(obs).float().to(device).unsqueeze(0).unsqueeze(0), torch.from_numpy(a).float().to(device).unsqueeze(0).unsqueeze(0), h, c)
                     
                     
                     # if t == 0:
