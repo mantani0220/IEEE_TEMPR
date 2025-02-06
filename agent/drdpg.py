@@ -13,32 +13,7 @@ from   torch.utils.tensorboard import SummaryWriter
 
 device = torch.device("cpu")
 
-class Critic(nn.Module):
-    def __init__(self, state_dim = None, action_dim = None):
-        super(Critic, self).__init__()
-        self.hidden_space = 32
-        self.state_dim = state_dim
-        self.action_dim = action_dim
-    
-        self.Linear1 = nn.Linear(self.state_dim + self.action_dim, self.hidden_space)
-        self.lstm = nn.LSTM(self.hidden_space, self.hidden_space, batch_first = True)
-        self.Linear2 = nn.Linear(self.hidden_space, 1)
-    
-    def forward(self, state, action, h, c):
-        x = torch.cat([state, action],dim=2)
-        x = F.relu(self.Linear1(x))
-        # LSTM
-        x, (new_h, new_c) = self.lstm(x, (h, c))
-        q_value = self.Linear2(x)
-        return q_value, new_h, new_c
-
-    def init_hidden_state(self, batch_size, training=None):
-        if training is True:
-            return torch.zeros([1, batch_size, self.hidden_space]), torch.zeros([1, batch_size, self.hidden_space])
-        else:
-            return torch.zeros([1, 1, self.hidden_space]), torch.zeros([1, 1, self.hidden_space])
-
-# DDPG Agent class
+# DRDPG Agent class
 class Actor(nn.Module):
     def __init__(self, state_dim, action_dim, max_action):
         super(Actor, self).__init__()
@@ -57,6 +32,32 @@ class Actor(nn.Module):
         action = self.max_action * torch.tanh(self.Linear2(x))
         return action, new_h, new_c
    
+    def init_hidden_state(self, batch_size, training=None):
+        if training is True:
+            return torch.zeros([1, batch_size, self.hidden_space]), torch.zeros([1, batch_size, self.hidden_space])
+        else:
+            return torch.zeros([1, 1, self.hidden_space]), torch.zeros([1, 1, self.hidden_space])
+
+#DRDPG Critic class
+class Critic(nn.Module):
+    def __init__(self, state_dim, action_dim):
+        super(Critic, self).__init__()
+        self.hidden_space = 32
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+    
+        self.Linear1 = nn.Linear(self.state_dim + self.action_dim, self.hidden_space)
+        self.lstm = nn.LSTM(self.hidden_space, self.hidden_space, batch_first = True)
+        self.Linear2 = nn.Linear(self.hidden_space, 1)
+    
+    def forward(self, state, action, h, c):
+        x = torch.cat([state, action],dim=2)
+        x = F.relu(self.Linear1(x))
+        # LSTM
+        x, (new_h, new_c) = self.lstm(x, (h, c))
+        q_value = self.Linear2(x)
+        return q_value, new_h, new_c
+
     def init_hidden_state(self, batch_size, training=None):
         if training is True:
             return torch.zeros([1, batch_size, self.hidden_space]), torch.zeros([1, batch_size, self.hidden_space])
@@ -169,30 +170,31 @@ class EpisodeMemory():
         return len(self.memory)
         
 class DRDPGagent:
-    def __init__(self, state_dim, action_dim, max_action, buffer_len, lookup_step, Actor_learning_rate, Critic_learning_rate,
-                       gamma, batch_size,tau ,initial_noise,noise_decay,noise_min, random_update, min_epi_num): 
+    def __init__(self, state_dim, action_dim, max_action, 
+                 buffer_len, lookup_step, Actor_learning_rate, Critic_learning_rate,
+                 gamma, batch_size,tau ,initial_noise, noise_decay, noise_min, random_update, min_epi_num): 
+        
         #actor setting
         self.actor = Actor(state_dim, action_dim, max_action).to(device)
         self.actor_target = copy.deepcopy(self.actor)
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters())
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(),lr = Actor_learning_rate)
         
         #critic setting
         self.critic = Critic(state_dim, action_dim).to(device)
         self.critic_target = copy.deepcopy(self.critic)
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters())
+        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(),lr = Critic_learning_rate)
         
-        self.max_epi_num = 100
-        self.max_epi_len = 1000
-        self.random_update = True
         
         #DRQN parameter
+        self.action_dim  = action_dim
         self.max_action  = max_action
         self.gamma = gamma
         self.batch_size = batch_size
         self.lookup_step = lookup_step
         self.min_epi_num  = min_epi_num
-        self.tau          = tau
-        self.policy_update_cnt = 0
+        self.max_epi_num = 100
+        self.max_epi_len = 1000
+        self.random_update = True
         
         # Replay Memory
         self.memory = EpisodeBuffer()
@@ -204,23 +206,26 @@ class DRDPGagent:
         self.noise_init   = initial_noise
         self.noise_decay  = noise_decay
         
+        #policy parameter
         self.policy_freq = 2
-        
-    def get_value(self, state, h, c):
-        state  = torch.FloatTensor(state.reshape(1, -1)).to(device)
-        action, h, c = self.actor(state, h, c)
-        return self.critic(state, action).cpu().data.numpy().flatten(), h, c
+        self.tau          = tau
+        self.policy_update_cnt = 0
     
     def get_action(self, state, h, c, noise):
         action, new_h, new_c = self.actor(state, h, c)      
         action = action.cpu().data.numpy().flatten()
         self.noise_cnt += 1
         if self.noise_cnt < self.noise_cnt_min:
-            action = self.max_action * (np.random.rand(self.actor.action_dim))
+            action = self.max_action * (np.random.rand(self.action_dim)-0.5)*2
         else:
-            noise_value = np.random.normal(0, noise, size=action.shape)
+            noise_value = np.random.normal(0, self.max_action * noise, size=self.action_dim)
             action = (action + noise_value).clip(-self.max_action, self.max_action)
         return action, new_h, new_c
+    
+    def get_value(self, state, action, h, c):
+        q_value,new_h, new_c = self.critic(state, action, h, c)
+        q_value= q_value.cpu().data.numpy().flatten()
+        return q_value, new_h, new_c
     
     def train(self, env,
               EPISODES      = 50,
@@ -234,7 +239,7 @@ class DRDPGagent:
         # Prepare log writer
         ######################################
         if LOG_DIR:
-            summary_dir    = LOG_DIR+'/test_run_'+datetime.now().strftime('%m%d_%H%M')
+            summary_dir    = LOG_DIR
             summary_writer = SummaryWriter(log_dir=summary_dir)
         if LOG_DIR and SHOW_PROGRESS:
             print(f'Progress recorded: {summary_dir}')
@@ -256,30 +261,27 @@ class DRDPGagent:
         # Train
         for episode in iterator:
             obs = env.reset()
-            
-            env.scaling = 1.0
-            env.bidding = 0.0
             done = False
-            
+
             episode_reward = 0
             episode_reward_discount = 0
-            
-            
             episode_bidding = []  # List to collect bidding data
-            
             episode_record = EpisodeBuffer()
-            h, c = self.critic.init_hidden_state(self.batch_size, training=False)
+            
+            h_actor, c_actor = self.actor.init_hidden_state(self.batch_size, training=False)
+            
+            h_critic, c_critic = self.critic.init_hidden_state(self.batch_size, training=False)
             
             while not done:
 
                 # Get action
-                a, h, c = self.get_action(torch.from_numpy(obs).float().to(device).unsqueeze(0).unsqueeze(0), 
-                                                  h.to(device), c.to(device),
+                a, h_actor, c_actor = self.get_action(torch.from_numpy(obs).float().to(device).unsqueeze(0).unsqueeze(0), 
+                                                  h_actor.to(device), c_actor.to(device),
                                                   noise)
 
                 # Do action
-                s_prime, r, done = env.step(a)
-                obs_prime = s_prime
+                obs_prime, r, done = env.step(a)
+                
                 episode_bidding.append(env.bidding)  # Collect bidding data
 
                 # episode_penalty_history.append(env.penalty)
@@ -287,7 +289,7 @@ class DRDPGagent:
                 # episode_xD_t_history.append(env.xD_t)
                 
                 with torch.no_grad():
-                    q_values, _, _ = self.critic(torch.from_numpy(obs).float().to(device).unsqueeze(0).unsqueeze(0), torch.from_numpy(a).float().to(device).unsqueeze(0).unsqueeze(0), h, c)
+                    q_values, h_critic, c_critic = self.get_value(torch.from_numpy(obs).float().to(device).unsqueeze(0).unsqueeze(0), torch.from_numpy(a).float().to(device).unsqueeze(0).unsqueeze(0),h_critic, c_critic)
                     
                     
                     # if t == 0:
@@ -322,7 +324,7 @@ class DRDPGagent:
             ###################################################
             if LOG_DIR:
                 summary_writer.add_scalar("Episode Reward", episode_reward, episode)
-                # summary_writer.add_scalar("Episode Q0",     episode_q0,     episode)
+                summary_writer.add_scalar("Episode Q0",     q_values,     episode)
                 summary_writer.add_scalar("noise",     noise,     episode)
                
                 summary_writer.flush()
