@@ -125,7 +125,7 @@ class LSTMEnergyEnv:
             observation = np.array([self.soc, 0.0, 0.0], dtype=np.float32)  # 終了時のダミー観測値
         
         else:
-            observation = np.array([self.soc, self.solar_radiation[self.current_step], current_market_price], dtype=np.float32)
+            observation = np.array([self.soc, current_solar_radiation, current_market_price], dtype=np.float32)
         
         lstm_input = torch.tensor(observation, dtype=torch.float32).unsqueeze(0).unsqueeze(0)  # バッチ次元とシーケンス次元を追加
         lstm_output, (h_next, c_next) = self.lstm(lstm_input, (h, c))
@@ -154,5 +154,6 @@ class LSTMEnergyEnv:
         ft = (lambda_t * (self.xD_t - self.penalty) - beta_t * (Pc_t + Pd_t)) * delta_t
         reward = ft - lambda_t * solar_generation * delta_t
         return reward
+
 
 
